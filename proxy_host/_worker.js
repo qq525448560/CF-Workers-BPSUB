@@ -1,4 +1,4 @@
-const hostname = "snippets.neib.cn";
+const hostname = "****";
 export default {
     async fetch(request, env, ctx) {
         if (request.headers.get('Upgrade') !== 'websocket') {
