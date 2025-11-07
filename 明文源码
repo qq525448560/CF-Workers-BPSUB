@@ -675,31 +675,62 @@ async function 整理优选列表(api, FileName) {
 
     let newapi = "";
 
-    // 创建一个AbortController对象，用于控制fetch请求的取消
-    const controller = new AbortController();
+    // 为单个API地址创建一个带重试机制的请求函数
+    const fetchWithRetry = async (apiUrl, maxRetries = 3, retryDelay = 500) => {
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                // 为每次单独请求设置一个较短的超时时间（例如3秒）
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
 
-    const timeout = setTimeout(() => {
-        controller.abort(); // 取消所有请求
-    }, 2000); // 2秒后触发
+                const response = await fetch(apiUrl, {
+                    method: 'get',
+                    headers: {
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;',
+                        'User-Agent': FileName + ' (https://github.com/cmliu/CF-Workers-BPSUB)'
+                    },
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId); // 请求成功，清除超时定时器
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                // 请求成功，返回内容
+                return await response.text();
+
+            } catch (error) {
+                console.warn(`API请求失败 (${i + 1}/${maxRetries}): ${apiUrl}`, error.message);
+                
+                // 如果不是最后一次重试，则等待一段时间后重试
+                if (i < maxRetries - 1) {
+                    // 指数退避策略，每次重试等待时间加倍
+                    await new Promise(resolve => setTimeout(resolve, retryDelay * Math.pow(2, i)));
+                } else {
+                    // 最后一次重试也失败了，返回null
+                    console.error(`API请求最终失败，已跳过: ${apiUrl}`);
+                    return null;
+                }
+            }
+        }
+    };
 
     try {
-        // 使用Promise.allSettled等待所有API请求完成，无论成功或失败
-        // 对api数组进行遍历，对每个API地址发起fetch请求
-        const responses = await Promise.allSettled(api.map(apiUrl => fetch(apiUrl, {
-            method: 'get',
-            headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;',
-                'User-Agent': FileName + ' (https://github.com/cmliu/CF-Workers-BPSUB)'
-            },
-            signal: controller.signal // 将AbortController的信号量添加到fetch请求中，以便于需要时可以取消请求
-        }).then(response => response.ok ? response.text() : Promise.reject())));
+        // 使用Promise.allSettled并行执行所有带重试的API请求
+        const responses = await Promise.allSettled(
+            api.map(apiUrl => 
+                fetchWithRetry(apiUrl) // 返回一个Promise，其结果是文本内容或null
+            )
+        );
 
         // 遍历所有响应
         for (const [index, response] of responses.entries()) {
-            // 检查响应状态是否为'fulfilled'，即请求成功完成
-            if (response.status === 'fulfilled') {
+            // 检查响应状态是否为'fulfilled'，并且值不为null
+            if (response.status === 'fulfilled' && response.value !== null) {
                 // 获取响应的内容
-                const content = await response.value;
+                const content = response.value;
 
                 const lines = content.split(/\r?\n/);
                 let 节点备注 = '';
@@ -725,10 +756,7 @@ async function 整理优选列表(api, FileName) {
             }
         }
     } catch (error) {
-        console.error(error);
-    } finally {
-        // 无论成功或失败，最后都清除设置的超时定时器
-        clearTimeout(timeout);
+        console.error('整理优选列表时发生未知错误:', error);
     }
 
     const newAddressesapi = await 整理成数组(newapi);
@@ -736,6 +764,7 @@ async function 整理优选列表(api, FileName) {
     // 返回处理后的结果
     return newAddressesapi;
 }
+
 
 function getDateString() {
     // 获取当前 UTC 时间
